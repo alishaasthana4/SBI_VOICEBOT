@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
+import sys
 import json
 import re
 import unicodedata
@@ -18,11 +19,13 @@ from prompts import (
 )
 import logging
 
-# Configure logging
 logging.basicConfig(
-    filename='app.log',
     level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("app.log"),
+        logging.StreamHandler(sys.stdout)  # This sends logs to stdout for Docker
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,6 @@ load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# In-memory state storage (use a database in production)
 sessions = {}
 
 # Pydantic models for request/response
@@ -458,7 +460,7 @@ async def submit_input(request: UserInputRequest):
         if state["policy_number"].endswith("4321"):
             session["current_step"] = "end"
             logger.info(f"Policy ends with 4321, redirecting")
-            return Response(message=LANGUAGE_STRINGS[language]["hero_policy_redirect"], next_field=None, state=state)
+            return Response(message=LANGUAGE_STRINGS[language]["health_policy_redirect"], next_field=None, state=state)
         if response.next_field is None:
             if session["flow"] =="claim":
                 session["current_step"] = "otp"
