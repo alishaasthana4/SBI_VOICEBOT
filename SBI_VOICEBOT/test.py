@@ -109,7 +109,7 @@ def infer_am_pm_from_text(user_input, language="english"):
             logger.debug(f"Inferred PM from hour: {hour}")
             return "PM"
 
-    # Return "none" for vague inputs like "at night" without numbers
+    # Return "none" for vague inputs like "at night"
     logger.debug(f"No AM/PM inferred, returning 'none'")
     return "none"
 
@@ -280,14 +280,9 @@ def extract_field(session_id: str, field: str, user_input: str):
         return Response(message=f"Extracted {field}: none", next_field=None, state=state)
 
     normalized_input = user_input
-    if field in ["policy_number", "otp", "mobile_number"]:
+    if field in ["policy_number", "otp"]:
         normalized_input = normalize_numerical_input(user_input, language, field)
-        if field == "mobile_number" and len(normalized_input) == 10 and normalized_input.isdigit():
-            state[field] = normalized_input
-            session["try_count"] = 0
-            logger.info(f"Extracted {field} = {normalized_input}")
-            return Response(message=f"Extracted {field}: {normalized_input}", next_field=None, state=state)
-        elif field == "otp" and len(normalized_input) == 6 and normalized_input.isdigit():
+        if field == "otp" and len(normalized_input) == 6 and normalized_input.isdigit():
             state[field] = normalized_input
             session["try_count"] = 0
             logger.info(f"Extracted {field} = {normalized_input}")
@@ -367,7 +362,7 @@ def is_mobile_registered(session_id: str, mobile: str):
         )
     else:
         logger.info(f"Invalid mobile number: {mobile}")
-        return None, Response(message=LANGUAGE_STRINGS[language]["invalid_mobile"], next_field="mobile_number", state=session["state"])
+        return None, Response(message=LANGUAGE_STRINGS[language]["invalid_mobile"], next_field=None, state=session["state"])
 
 @app.post("/start_flow", response_model=Response)
 async def start_flow(request: StartFlowRequest):
@@ -383,6 +378,10 @@ async def submit_input(request: UserInputRequest):
     if not session:
         logger.error(f"Session not found: {request.session_id}")
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Extract first 10 digits from session_id as mobile_number
+    mobile_number = request.session_id[:10]
+    logger.info(f"Extracted mobile number: {mobile_number}")
 
     user_input = request.user_input.strip().lower()
     language = session["language"]
@@ -413,39 +412,46 @@ async def submit_input(request: UserInputRequest):
             session["flow"] = "claim"
             session["current_step"] = "mobile_number"
             logger.info(f"Selected claim flow")
-            return Response(message=LANGUAGE_STRINGS[language]["mobile_prompt"], next_field="mobile_number", state=state)
-        elif any(keyword in user_input for keyword in policy_keywords[language]):
-            session["flow"] = "policy_pdf"
-            session["current_step"] = "mobile_number"
-            logger.info(f"Selected policy_pdf flow")
-            return Response(message=LANGUAGE_STRINGS[language]["mobile_prompt"], next_field="mobile_number", state=state)
-        else:
-            logger.debug(f"Invalid intent input: {user_input}")
-            return Response(message=LANGUAGE_STRINGS[language]["invalid_input"], next_field="intent", state=state)
-
-    elif current_step == "mobile_number":
-        is_registered, response = is_mobile_registered(request.session_id, user_input)
-        if response.next_field is None:
-            session["current_step"] = "policy_number"
-            if session["flow"] == "claim":
+            # Process mobile number automatically
+            is_registered, response = is_mobile_registered(request.session_id, mobile_number)
+            if response.next_field is None:
+                session["current_step"] = "policy_number"
                 if is_registered:
                     message = LANGUAGE_STRINGS[language]["policy_list"] + "\n" + LANGUAGE_STRINGS[language]["policy_prompt"]
                 else:
                     message = LANGUAGE_STRINGS[language]["policy_number_prompt"]
                 logger.info(f"Mobile registered: {is_registered}, prompting for policy_number")
-                return Response(message=response.message + "\n" + message, next_field="policy_number", state=state)
-            else:  # policy_pdf
+                return Response(message=message, next_field="policy_number", state=state)
+            else:
+                # Invalid mobile number, end flow
+                session["current_step"] = "end"
+                logger.warning(f"Invalid mobile number extracted: {mobile_number}")
+                return Response(message=LANGUAGE_STRINGS[language]["invalid_mobile"] + "\n" + LANGUAGE_STRINGS[language]["end_flow"], next_field=None, state=state)
+        elif any(keyword in user_input for keyword in policy_keywords[language]):
+            session["flow"] = "policy_pdf"
+            session["current_step"] = "mobile_number"
+            logger.info(f"Selected policy_pdf flow")
+            # Process mobile number automatically
+            is_registered, response = is_mobile_registered(request.session_id, mobile_number)
+            if response.next_field is None:
                 policies = ["12345678", "87654321"]
                 message = LANGUAGE_STRINGS[language]["policy_list"].format(policy1=policies[0], policy2=policies[1]) + "\n" + LANGUAGE_STRINGS[language]["policy_prompt"]
                 if is_registered:
                     session["current_step"] = "policy_number"
                     logger.info(f"Mobile registered, prompting for policy_number in policy_pdf flow")
-                    return Response(message=response.message + "\n" + message, next_field="policy_number", state=state)
+                    return Response(message=message, next_field="policy_number", state=state)
                 else:
                     session["current_step"] = "otp"
                     logger.info(f"Mobile unregistered, prompting for OTP in policy_pdf flow")
-                    return Response(message=response.message + "\n" + LANGUAGE_STRINGS[language]["otp_unregistered"], next_field="otp", state=state)
-        return response
+                    return Response(message=LANGUAGE_STRINGS[language]["otp_unregistered"], next_field="otp", state=state)
+            else:
+                # Invalid mobile number, end flow
+                session["current_step"] = "end"
+                logger.warning(f"Invalid mobile number extracted: {mobile_number}")
+                return Response(message=LANGUAGE_STRINGS[language]["invalid_mobile"] + "\n" + LANGUAGE_STRINGS[language]["end_flow"], next_field=None, state=state)
+        else:
+            logger.debug(f"Invalid intent input: {user_input}")
+            return Response(message=LANGUAGE_STRINGS[language]["invalid_input"], next_field="intent", state=state)
 
     elif current_step == "policy_number":
         response = extract_field(request.session_id, "policy_number", user_input)
@@ -454,7 +460,7 @@ async def submit_input(request: UserInputRequest):
             logger.info(f"Policy ends with 4321, redirecting")
             return Response(message=LANGUAGE_STRINGS[language]["hero_policy_redirect"], next_field=None, state=state)
         if response.next_field is None:
-            if session["flow"] == "claim":
+            if session["flow"] =="claim":
                 session["current_step"] = "otp"
                 message = LANGUAGE_STRINGS[language]["fetch_policy"] + "\n" + (LANGUAGE_STRINGS[language]["otp_registered"] if session["is_registered"] else LANGUAGE_STRINGS[language]["otp_unregistered"])
                 logger.info(f"Policy extracted, prompting for OTP in claim flow")
