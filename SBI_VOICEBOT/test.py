@@ -500,123 +500,72 @@ async def submit_input(request: UserInputRequest):
         return response
 
     elif current_step == "time_of_accident":
-        normalized_input = normalize_numerical_input(user_input, language, "time_of_accident")
-        logger.debug(f"Time_of_accident normalized input: {normalized_input}")
-        # Handle time inputs with spaces (e.g., "21 45")
-        time_parts = normalized_input.split()
-        if len(time_parts) == 2 and all(part.isdigit() for part in time_parts):
-            hour = int(time_parts[0])
-            minute = int(time_parts[1])
-            logger.debug(f"Parsed time parts: hour={hour}, minute={minute}")
-            if 0 <= hour <= 24 and 0 <= minute <= 59:
-                # Convert 24-hour to 12-hour format
-                if hour == 0:
-                    hour_12 = 12
-                    state["am_pm"] = "AM"
-                elif hour == 12:
-                    hour_12 = 12
-                    state["am_pm"] = "PM"
-                elif hour > 12:
-                    hour_12 = hour - 12
-                    state["am_pm"] = "PM"
-                else:
-                    hour_12 = hour
-                    state["am_pm"] = "AM"
-                
+        normalized_input = normalize_numerical_input(user_input, language)
+        inferred_am_pm = infer_am_pm_from_text(user_input, language)
+        # Handle time with colon or space (e.g., "2:30", "2 30", "14:15")
+        match = re.match(r"^(\d{1,2})[:\s](\d{1,2})$", normalized_input)
+        if match:
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+            if 13 <= hour <= 24:
+                hour_12 = hour - 12 if hour > 12 else 12
                 state["time_of_accident"] = f"{hour_12:02d}:{minute:02d}:00"
+                state["am_pm"] = "PM"
                 session["current_step"] = "city_of_accident"
-                logger.info(f"Extracted time_of_accident = {state['time_of_accident']}, am_pm = {state['am_pm']}")
                 return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
+            elif 1 <= hour <= 12:
+                state["time_of_accident"] = f"{hour:02d}:{minute:02d}:00"
+                if inferred_am_pm in ["AM", "PM"]:
+                    state["am_pm"] = inferred_am_pm
+                    session["current_step"] = "city_of_accident"
+                    return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
+                else:
+                    session["current_step"] = "am_pm"
+                    return Response(message=LANGUAGE_STRINGS[language]["am_pm_clarify"], next_field="am_pm", state=state)
             else:
-                logger.warning(f"Invalid time input: hour={hour}, minute={minute}")
                 return Response(message=LANGUAGE_STRINGS[language]["invalid_input"], next_field="time_of_accident", state=state)
-        # Handle single number input (e.g., "21")
         elif re.fullmatch(r"\d{1,2}", normalized_input):
             hour = int(normalized_input)
-            logger.debug(f"Parsed single hour: {hour}")
-            if 0 <= hour <= 24:
-                # Convert 24-hour to 12-hour format
-                if hour == 0:
-                    hour_12 = 12
-                    state["am_pm"] = "AM"
-                elif hour == 12:
-                    hour_12 = 12
-                    state["am_pm"] = "PM"
-                elif hour > 12:
-                    hour_12 = hour - 12
-                    state["am_pm"] = "PM"
-                else:
-                    hour_12 = hour
-                    state["am_pm"] = "AM"
-                
+            if 13 <= hour <= 24:
+                hour_12 = hour - 12 if hour > 12 else 12
                 state["time_of_accident"] = f"{hour_12:02d}:00:00"
-                session["current_step"] = "city_of_accident"
-                logger.info(f"Extracted time_of_accident = {state['time_of_accident']}, am_pm = {state['am_pm']}")
-                return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
-            else:
-                logger.warning(f"Invalid hour: {hour}")
-                return Response(message=LANGUAGE_STRINGS[language]["invalid_input"], next_field="time_of_accident", state=state)
-        # Check for vague inputs like "at night"
-        inferred_am_pm = infer_am_pm_from_text(user_input, language)
-        if inferred_am_pm != "none" and not re.search(r'\d+', user_input):
-            logger.debug(f"Vague input detected: {user_input}, inferred_am_pm={inferred_am_pm}")
-            session["try_count"] += 1
-            if session["try_count"] > session["max_retries"]:
-                state["time_of_accident"] = "none"
-                state["am_pm"] = "none"
-                session["try_count"] = 0
-                logger.warning(f"Max retries exceeded for time input: {user_input}")
+                state["am_pm"] = "PM"
                 session["current_step"] = "city_of_accident"
                 return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
-            return Response(
-                message=LANGUAGE_STRINGS[language]["repeat_prompt"].format(field="time of accident"),
-                next_field="time_of_accident",
-                state=state
-            )
-        # Fallback to extract_field for other inputs
-        logger.debug(f"Falling back to extract_field for time input: {user_input}")
-        response = extract_field(request.session_id, "time_of_accident", user_input)
-        if response.next_field is None:
-            try:
-                hour = int(state["time_of_accident"].split(":")[0])
-                logger.debug(f"Extracted hour from time_of_accident: {hour}")
-                # Handle 24-hour format
-                if hour == 0:
-                    state["am_pm"] = "AM"
-                elif hour == 12:
-                    state["am_pm"] = "PM"
-                elif hour > 12:
-                    state["am_pm"] = "PM"
-                    hour_12 = hour - 12
-                    minute = int(state["time_of_accident"].split(":")[1])
-                    state["time_of_accident"] = f"{hour_12:02d}:{minute:02d}:00"
+            elif 1 <= hour <= 12:
+                state["time_of_accident"] = f"{hour:02d}:00:00"
+                if inferred_am_pm in ["AM", "PM"]:
+                    state["am_pm"] = inferred_am_pm
+                    session["current_step"] = "city_of_accident"
+                    return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
                 else:
-                    state["am_pm"] = "AM"
-                logger.info(f"Extracted am_pm = {state['am_pm']}, updated time_of_accident = {state['time_of_accident']}")
-                session["current_step"] = "city_of_accident"
-                return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
-            except Exception as e:
-                logger.error(f"Exception in time parsing: {str(e)}")
-                state["am_pm"] = infer_am_pm_from_text(user_input, language)
-                if state["am_pm"] == "none":
-                    session["try_count"] += 1
-                    if session["try_count"] > session["max_retries"]:
-                        state["time_of_accident"] = "none"
-                        state["am_pm"] = "none"
-                        session["try_count"] = 0
-                        logger.warning(f"Max retries exceeded for time input: {user_input}")
-                        session["current_step"] = "city_of_accident"
-                        return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
-                    logger.info(f"No AM/PM detected, prompting for specific time")
-                    return Response(
-                        message=LANGUAGE_STRINGS[language]["repeat_prompt"].format(field="time of accident"),
-                        next_field="time_of_accident",
-                        state=state
-                    )
-                session["current_step"] = "city_of_accident"
-                logger.info(f"Inferred am_pm = {state['am_pm']}, moving to city_of_accident")
-                return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
-        return response
+                    session["current_step"] = "am_pm"
+                    return Response(message=LANGUAGE_STRINGS[language]["am_pm_clarify"], next_field="am_pm", state=state)
+            else:
+                return Response(message=LANGUAGE_STRINGS[language]["invalid_input"], next_field="time_of_accident", state=state)
+        else:
+            # fallback to LLM extraction
+            response = extract_field(request.session_id, "time_of_accident", user_input)
+            if response.next_field is None:
+                try:
+                    hour = int(state["time_of_accident"].split(":")[0])
+                    if hour >= 13:
+                        state["am_pm"] = "PM"
+                    elif 1 <= hour <= 12:
+                        state["am_pm"] = infer_am_pm_from_text(user_input, language)
+                        if state["am_pm"] == "none":
+                            session["current_step"] = "am_pm"
+                            return Response(message=LANGUAGE_STRINGS[language]["am_pm_clarify"], next_field="am_pm", state=state)
+                    session["current_step"] = "city_of_accident"
+                    return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
+                except Exception:
+                    state["am_pm"] = infer_am_pm_from_text(user_input, language)
+                    if state["am_pm"] == "none":
+                        session["current_step"] = "am_pm"
+                        return Response(message=LANGUAGE_STRINGS[language]["am_pm_clarify"], next_field="am_pm", state=state)
+                    session["current_step"] = "city_of_accident"
+                    return Response(message=LANGUAGE_STRINGS[language]["city_prompt"], next_field="city_of_accident", state=state)
+            return response
 
     elif current_step == "am_pm":
         am_pm_input = user_input.strip().upper()
